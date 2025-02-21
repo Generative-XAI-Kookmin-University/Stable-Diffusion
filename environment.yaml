@@ -5,9 +5,9 @@ channels:
 dependencies:
   - python=3.8.5
   - pip=20.3
-  - cudatoolkit=11.3
-  - pytorch=1.11.0
-  - torchvision=0.12.0
+  - cudatoolkit=11.8
+  - pytorch=2.0.1
+  - torchvision=0.15.2
   - numpy=1.19.2
   - pip:
     - albumentations==0.4.3
@@ -17,7 +17,7 @@ dependencies:
     - invisible-watermark
     - imageio==2.9.0
     - imageio-ffmpeg==0.4.2
-    - pytorch-lightning==1.4.2
+    - pytorch-lightning
     - omegaconf==2.1.1
     - test-tube>=0.7.5
     - streamlit>=0.73.1
