@@ -120,6 +120,7 @@ def get_parser(**parser_kwargs):
         default=True,
         help="scale base-lr by ngpu * batch_size * n_accumulate",
     )
+    
     return parser
 
 
@@ -400,7 +401,7 @@ class CUDACallback(Callback):
         torch.cuda.synchronize(trainer.root_gpu)
         self.start_time = time.time()
 
-    def on_train_epoch_end(self, trainer, pl_module, outputs):
+    def on_train_epoch_end(self, trainer, pl_module, outputs=None):
         torch.cuda.synchronize(trainer.root_gpu)
         max_memory = torch.cuda.max_memory_allocated(trainer.root_gpu) / 2 ** 20
         epoch_time = time.time() - self.start_time
@@ -524,19 +525,17 @@ if __name__ == "__main__":
         if not "gpus" in trainer_config:
             del trainer_config["accelerator"]
             cpu = True
+            print('no gpu')
         else:
             gpuinfo = trainer_config["gpus"]
             print(f"Running on GPUs {gpuinfo}")
             cpu = False
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
-
         # model
         model = instantiate_from_config(config.model)
-
         # trainer and callbacks
         trainer_kwargs = dict()
-
         # default logger configs
         default_logger_cfgs = {
             "wandb": {
@@ -563,7 +562,6 @@ if __name__ == "__main__":
             logger_cfg = OmegaConf.create()
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
         trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
-
         # modelcheckpoint - use TrainResult/EvalResult(checkpoint_on=metric) to
         # specify which metric is used to determine best models
         default_modelckpt_cfg = {
@@ -579,7 +577,6 @@ if __name__ == "__main__":
             print(f"Monitoring {model.monitor} as checkpoint metric.")
             default_modelckpt_cfg["params"]["monitor"] = model.monitor
             default_modelckpt_cfg["params"]["save_top_k"] = 3
-
         if "modelcheckpoint" in lightning_config:
             modelckpt_cfg = lightning_config.modelcheckpoint
         else:
@@ -588,7 +585,6 @@ if __name__ == "__main__":
         print(f"Merged modelckpt-cfg: \n{modelckpt_cfg}")
         if version.parse(pl.__version__) < version.parse('1.4.0'):
             trainer_kwargs["checkpoint_callback"] = instantiate_from_config(modelckpt_cfg)
-
         # add callback which sets up log directory
         default_callbacks_cfg = {
             "setup_callback": {
@@ -603,14 +599,14 @@ if __name__ == "__main__":
                     "lightning_config": lightning_config,
                 }
             },
-            "image_logger": {
-                "target": "main.ImageLogger",
-                "params": {
-                    "batch_frequency": 750,
-                    "max_images": 4,
-                    "clamp": True
-                }
-            },
+            #"image_logger": {
+            #    "target": "main.ImageLogger",
+            #    "params": {
+            #        "batch_frequency": 750,
+            #        "max_images": 4,
+            #        "clamp": True
+            #    }
+            #},
             "learning_rate_logger": {
                 "target": "main.LearningRateMonitor",
                 "params": {
@@ -624,12 +620,10 @@ if __name__ == "__main__":
         }
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
             default_callbacks_cfg.update({'checkpoint_callback': modelckpt_cfg})
-
         if "callbacks" in lightning_config:
             callbacks_cfg = lightning_config.callbacks
         else:
             callbacks_cfg = OmegaConf.create()
-
         if 'metrics_over_trainsteps_checkpoint' in callbacks_cfg:
             print(
                 'Caution: Saving checkpoints every n train steps without deleting. This might require some free space.')
@@ -647,15 +641,13 @@ if __name__ == "__main__":
                      }
             }
             default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
-
         callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
         if 'ignore_keys_callback' in callbacks_cfg and hasattr(trainer_opt, 'resume_from_checkpoint'):
             callbacks_cfg.ignore_keys_callback.params['ckpt_path'] = trainer_opt.resume_from_checkpoint
         elif 'ignore_keys_callback' in callbacks_cfg:
             del callbacks_cfg['ignore_keys_callback']
-
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
-
+        trainer_kwargs["accelerator"] = "gpu"
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
@@ -692,7 +684,6 @@ if __name__ == "__main__":
             print("++++ NOT USING LR SCALING ++++")
             print(f"Setting learning rate to {model.learning_rate:.2e}")
 
-
         # allow checkpointing via USR1
         def melk(*args, **kwargs):
             # run all checkpoint hooks
@@ -723,6 +714,7 @@ if __name__ == "__main__":
         if not opt.no_test and not trainer.interrupted:
             trainer.test(model, data)
     except Exception:
+        print('except start')
         if opt.debug and trainer.global_rank == 0:
             try:
                 import pudb as debugger
