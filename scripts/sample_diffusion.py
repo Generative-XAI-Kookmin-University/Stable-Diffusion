@@ -266,7 +266,8 @@ if __name__ == "__main__":
         logdir = opt.resume.rstrip("/")
         ckpt = os.path.join(logdir, "model.ckpt")
 
-    base_configs = sorted(glob.glob(os.path.join(logdir, "config.yaml")))
+    #base_configs = sorted(glob.glob(os.path.join(logdir, "config.yaml")))
+    base_configs = sorted(glob.glob("/root/Stable-Diffusion/models/ldm/celeba256/new_config.yaml"))
     opt.base = base_configs
 
     configs = [OmegaConf.load(cfg) for cfg in opt.base]

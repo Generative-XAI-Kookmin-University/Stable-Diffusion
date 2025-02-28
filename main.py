@@ -65,7 +65,7 @@ def get_parser(**parser_kwargs):
         "--train",
         type=str2bool,
         const=True,
-        default=False,
+        default=True,
         nargs="?",
         help="train",
     )
@@ -705,6 +705,7 @@ if __name__ == "__main__":
         signal.signal(signal.SIGUSR2, divein)
 
         # run
+        print(opt.train)
         if opt.train:
             try:
                 trainer.fit(model, data)
@@ -731,3 +732,6 @@ if __name__ == "__main__":
             os.rename(logdir, dst)
         if trainer.global_rank == 0:
             print(trainer.profiler.summary())
+
+# pip install pytorch-lightning==1.7.7
+# pip install taming-transformers-rom1504
