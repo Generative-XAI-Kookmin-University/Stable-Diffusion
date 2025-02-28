@@ -14,7 +14,7 @@ model:
     cond_stage_trainable: false
     concat_mode: false
     monitor: val/loss
-
+ 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
@@ -67,10 +67,15 @@ data:
     train:
       target: ldm.data.celeba.CelebAHQTrain
       params:
-        data_root: "../data/celeba_hq_256"
+        data_root: "../data/train"
         size: 128
     validation:
       target: ldm.data.celeba.CelebAHQValidation
       params:
-        data_root: "../data/celeba_hq_256"
+        data_root: "../data/val"
+        size: 128
+    test:
+      target: ldm.data.celeba.CelebAHQValidation
+      params:
+        data_root: "../data/val"
         size: 128
