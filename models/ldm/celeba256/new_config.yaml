@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 9.6e-5
+  base_learning_rate: 1e-5
   target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
     linear_start: 0.0015
@@ -18,7 +18,7 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: 32
+        image_size: 64
         in_channels: 3
         out_channels: 3
         model_channels: 224
@@ -39,6 +39,7 @@ model:
       params:
         embed_dim: 3
         n_embed: 8192
+        ckpt_path: models/first_stage_models/vq-f4/model.ckpt
         ddconfig:
           double_z: false
           z_channels: 3
