@@ -3,7 +3,7 @@ import shutil
 import random
 
 # 원본 이미지 폴더
-source_folder = "/root/data/celeba_hq_256"
+source_folder = "../data/celeba_hq_256"
 
 # train / val 저장 폴더
 train_folder = "train"

@@ -9,6 +9,7 @@ from ldm.modules.diffusionmodules.model import Encoder, Decoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ldm.util import instantiate_from_config
+from packaging import version
 
 
 class VQModel(pl.LightningModule):
@@ -147,9 +148,11 @@ class VQModel(pl.LightningModule):
 
         if optimizer_idx == 0:
             # autoencode
+            # aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
+            #                                 last_layer=self.get_last_layer(), split="train",
+            #                                 predicted_indices=ind)
             aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train",
-                                            predicted_indices=ind)
+                                            last_layer=self.get_last_layer(), split="train")
 
             self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
             return aeloss
@@ -170,19 +173,27 @@ class VQModel(pl.LightningModule):
     def _validation_step(self, batch, batch_idx, suffix=""):
         x = self.get_input(batch, self.image_key)
         xrec, qloss, ind = self(x, return_pred_indices=True)
+        # aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0,
+        #                                 self.global_step,
+        #                                 last_layer=self.get_last_layer(),
+        #                                 split="val"+suffix,
+        #                                 predicted_indices=ind
+        #                                 )
         aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0,
                                         self.global_step,
                                         last_layer=self.get_last_layer(),
-                                        split="val"+suffix,
-                                        predicted_indices=ind
-                                        )
+                                        split="val"+suffix)
 
+        # discloss, log_dict_disc = self.loss(qloss, x, xrec, 1,
+        #                                     self.global_step,
+        #                                     last_layer=self.get_last_layer(),
+        #                                     split="val"+suffix,
+        #                                     predicted_indices=ind
+        #                                     )
         discloss, log_dict_disc = self.loss(qloss, x, xrec, 1,
                                             self.global_step,
                                             last_layer=self.get_last_layer(),
-                                            split="val"+suffix,
-                                            predicted_indices=ind
-                                            )
+                                            split="val"+suffix)
         rec_loss = log_dict_ae[f"val{suffix}/rec_loss"]
         self.log(f"val{suffix}/rec_loss", rec_loss,
                    prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)

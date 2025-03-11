@@ -9,7 +9,7 @@ model:
     ddconfig:
       double_z: false
       z_channels: 3
-      resolution: 256
+      resolution: 128
       in_channels: 3
       out_ch: 3
       ch: 128
@@ -33,13 +33,15 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 8
-    num_workers: 16
+    num_workers: 8
     wrap: true
     train:
-      target: ldm.data.openimages.FullOpenImagesTrain
+      target: ldm.data.celeba.CelebAHQTrain
       params:
-        crop_size: 256
+        data_root: "./train"
+        size: 128
     validation:
-      target: ldm.data.openimages.FullOpenImagesValidation
+      target: ldm.data.celeba.CelebAHQValidation
       params:
-        crop_size: 256
+        data_root: "./val"
+        size: 128

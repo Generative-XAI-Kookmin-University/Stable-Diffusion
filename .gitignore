@@ -2,3 +2,8 @@ __pycache__/
 logs/
 src/
 latent_diffusion.egg-info/
+taming/
+train/
+val/
+**/testtube/
+*.ckpt
