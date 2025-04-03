@@ -3,7 +3,7 @@ import shutil
 import random
 
 # 원본 이미지 폴더
-source_folder = "/root/data/celeba_hq_256"
+source_folder = "../celeba_hq_256"
 
 # train / val 저장 폴더
 train_folder = "train"
@@ -20,9 +20,9 @@ image_files = [f for f in os.listdir(source_folder) if f.lower().endswith(('.png
 random.shuffle(image_files)
 
 # 8:2 비율로 분할
-split_idx = int(len(image_files) * 0.8)
-train_files = image_files[:split_idx]
-val_files = image_files[split_idx:]
+#split_idx = int(len(image_files) * 0.8)
+train_files = image_files[:25000]
+val_files = image_files[25000:]
 
 # 파일 복사 함수 (move → copy로 변경)
 def copy_files(files, destination_folder):
