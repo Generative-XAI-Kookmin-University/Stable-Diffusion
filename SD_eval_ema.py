@@ -45,9 +45,13 @@ def load_model_from_config(config, ckpt, use_ema=True):
     
     # EMA 모델 로딩 처리
     if use_ema:
-        if "state_dict_ema" in pl_sd:
+        # EMA 키가 있는지 확인
+        has_ema_weights = any(k.startswith('model_ema.') for k in pl_sd.keys())
+        if has_ema_weights:
             print("Loading EMA weights...")
-            model.load_state_dict(pl_sd["state_dict_ema"], strict=False)
+            # EMA 가중치만 추출
+            ema_state_dict = {k.replace('model_ema.', ''): v for k, v in pl_sd.items() if k.startswith('model_ema.')}
+            model.load_state_dict(ema_state_dict, strict=False)
         else:
             print("EMA weights not found in checkpoint. Using regular weights.")
             model.load_state_dict(pl_sd["state_dict"], strict=False)
