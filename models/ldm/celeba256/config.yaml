@@ -37,6 +37,7 @@ model:
       params:
         embed_dim: 3
         n_embed: 8192
+        ckpt_path: models/first_stage_models/vq-f4/epoch=000082.ckpt
         ddconfig:
           double_z: false
           z_channels: 3
@@ -57,14 +58,27 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 48
+    batch_size: 8
     num_workers: 5
     wrap: false
     train:
-      target: ldm.data.faceshq.CelebAHQTrain
+      target: ldm.data.celeba.CelebAHQTrain
       params:
+        data_root: "../celeba_new/train"
         size: 256
     validation:
-      target: ldm.data.faceshq.CelebAHQValidation
+      target: ldm.data.celeba.CelebAHQValidation
       params:
+        data_root: "../celeba_new/val"
         size: 256
+
+lightning:
+  callbacks:
+    metrics_over_trainsteps_checkpoint:
+      target: pytorch_lightning.callbacks.ModelCheckpoint
+      params:
+        filename: "{epoch:03}-{step:06}"
+        verbose: True
+        save_top_k: -1
+        every_n_train_steps: 50000
+        save_weights_only: False
