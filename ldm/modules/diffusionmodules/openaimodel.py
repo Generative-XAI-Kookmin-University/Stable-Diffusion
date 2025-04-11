@@ -77,10 +77,10 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None):
+    def forward(self, x, emb, context=None, saliency_map=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
-                x = layer(x, emb)
+                x = layer(x, emb, saliency_map=saliency_map)
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
             else:
@@ -289,6 +289,7 @@ class AttentionBlock(nn.Module):
         num_head_channels=-1,
         use_checkpoint=False,
         use_new_attention_order=False,
+        saliency_weight=0.0,
     ):
         super().__init__()
         self.channels = channels
@@ -311,17 +312,44 @@ class AttentionBlock(nn.Module):
 
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
+        self.saliency_weight = saliency_weight
+
     def forward(self, x):
         return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
         #return pt_checkpoint(self._forward, x)  # pytorch
 
-    def _forward(self, x):
+    def _forward(self, x, saliency_map):
         b, c, *spatial = x.shape
-        x = x.reshape(b, c, -1)
-        qkv = self.qkv(self.norm(x))
-        h = self.attention(qkv)
-        h = self.proj_out(h)
-        return (x + h).reshape(b, c, *spatial)
+        L = np.prod(spatial)
+        x_reshaped = x.reshape(b, c, -1)
+        normed = self.norm(x_reshaped)
+        qkv = self.qkv(normed)
+
+        q, k, v = qkv.chunk(3, dim=1)
+
+        q = q.reshape(b, self.num_heads, -1, L)
+        k = k.reshape(b, self.num_heads, -1, L)
+        v = v.reshape(b, self.num_heads, -1, L)
+
+        if saliency_map is not None:
+            saliency_resized = F.interpolate(saliency_map, size=spatial, mode="bilinear", align_corners=False)
+            saliency_flat = saliency_resized.view(b, 1, -1)  # [B, 1, L]
+
+            saliency_factor = 1 + self.saliency_weight * saliency_flat  # [B, 1, L]
+            saliency_factor = saliency_factor.expand(b, self.num_heads, L)  # [B, num_heads, L]
+            saliency_factor = saliency_factor.unsqueeze(2)  # [B, num_heads, 1, L]
+
+            k = k * saliency_factor
+            v = v * saliency_factor
+
+        scale = 1 / math.sqrt(k.shape[2])
+        q = q * scale
+        weight = th.einsum("b h d n, b h d m -> b h n m", q, k)
+        weight = th.softmax(weight, dim=-1)
+        a = th.einsum("b h n m, b h d m -> b h d n", weight, v)
+        a = a.reshape(b, -1, L)
+        a = self.proj_out(a)
+        return (x_reshaped + a).reshape(b, c, *spatial)
 
 
 def count_flops_attn(model, _x, y):
@@ -466,8 +494,11 @@ class UNetModel(nn.Module):
         context_dim=None,                 # custom transformer support
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
+        saliency_weight=0.0,
     ):
         super().__init__()
+        self.saliency_weight = saliency_weight
+
         if use_spatial_transformer:
             assert context_dim is not None, 'Fool!! You forgot to include the dimension of your cross-attention conditioning...'
 
@@ -707,7 +738,7 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, context=None, y=None,**kwargs):
+    def forward(self, x, timesteps=None, context=None, y=None, saliency_map=None, **kwargs):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -729,12 +760,12 @@ class UNetModel(nn.Module):
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb, context)
+            h = module(h, emb, context, saliency_map=saliency_map)
             hs.append(h)
-        h = self.middle_block(h, emb, context)
+        h = self.middle_block(h, emb, context, saliency_map=saliency_map)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context)
+            h = module(h, emb, context, saliency_map=saliency_map)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)

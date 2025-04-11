@@ -25,6 +25,11 @@ from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, Autoenc
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 
+from Flaw_Highlighter import FlawHighlighter
+from torchvision.transforms.functional import normalize, resize, to_pil_image
+from pytorch_grad_cam import GradCAM, AblationCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
@@ -71,6 +76,8 @@ class DDPM(pl.LightningModule):
                  use_positional_encodings=False,
                  learn_logvar=False,
                  logvar_init=0.,
+                 first_process_steps=1000, # 250000
+                 FH_config=None
                  ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
@@ -112,6 +119,26 @@ class DDPM(pl.LightningModule):
         self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
+
+        self.first_process_steps = first_process_steps
+
+        if FH_config is not None:
+            FH_params = FH_config.get("params", {})
+            ckpt_path = FH_params.pop("ckpt_path", None)
+
+            if ckpt_path is None:
+                raise ValueError("FH_config must specify 'ckpt_path'")
+
+            self.FH = instantiate_from_config(FH_config)
+            FH_ckpt = torch.load(ckpt_path, map_location="cpu")
+            self.FH.load_state_dict(FH_ckpt['model_state_dict'])
+            self.FH.eval()
+
+            for param in self.FH.parameters():
+                param.requires_grad = False
+            print("Pretrained Flaw Highlighter loaded successfully.")
+        else:
+            raise ValueError("FH_config must be provided to use saliency conditioning.")
 
 
     def register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
@@ -291,10 +318,10 @@ class DDPM(pl.LightningModule):
 
         return loss
 
-    def p_losses(self, x_start, t, noise=None):
+    def p_losses(self, x_start, cond, t, noise=None, saliency_map=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_out = self.model(x_noisy, t)
+        model_out = self.model(x_noisy, t, saliency_map=saliency_map)
 
         loss_dict = {}
         if self.parameterization == "eps":
@@ -320,11 +347,11 @@ class DDPM(pl.LightningModule):
 
         return loss, loss_dict
 
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x, saliency_map=None, *args, **kwargs):
         # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
-        return self.p_losses(x, t, *args, **kwargs)
+        return self.p_losses(x, t, saliency_map=saliency_map, *args, **kwargs)
 
     def get_input(self, batch, k):
         x = batch[k]
@@ -340,19 +367,58 @@ class DDPM(pl.LightningModule):
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
-        loss, loss_dict = self.shared_step(batch)
+        x = self.get_input(batch, self.first_stage_key)
 
-        self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True)
+        if self.global_step < self.first_process_steps:
+            loss, loss_dict = self.shared_step(batch)
 
-        self.log("global_step", self.global_step,
-                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            self.log_dict(loss_dict, prog_bar=True,
+                        logger=True, on_step=True, on_epoch=True)
 
-        if self.use_scheduler:
-            lr = self.optimizers().param_groups[0]['lr']
-            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            self.log("global_step", self.global_step,
+                    prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
-        return loss
+            if self.use_scheduler:
+                lr = self.optimizers().param_groups[0]['lr']
+                self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+        else:
+            if self.global_step % 100 == 0:
+                with self.ema_scope("Saliency Extraction"):
+                    generated_latents = self.model_ema.ema_model.sample(batch_size=x.size(0))
+                    generated_images = self.decode_first_stage(generated_latents)
+
+                noise_maps = []
+
+                for img in generated_images:
+                    input_tensor = torchvision.transforms.functional.resize(img, [128, 128])
+                    input_tensor = torchvision.transforms.functional.normalize(input_tensor, [0.45, 0.45, 0.45], [0.25, 0.25, 0.25])
+                    input_tensor = input_tensor.unsqueeze(0).to(self.device)
+                    input_tensor.requires_grad = True
+                    target_layers = [layer for layer in self.FH.features if isinstance(layer, nn.Conv2d)]
+                    target_layers = target_layers[-1:]
+                    cam = GradCAM(model=self.FH, target_layers=target_layers)
+                    cam.batch_size = 1
+                    grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(0)])
+                    noise_maps.append(torch.tensor(grayscale_cam[0]).to(self.device))
+                saliency_map = torch.mean(torch.stack(noise_maps), dim=0)
+                self.current_saliency_map = saliency_map
+
+            else:
+                saliency_map = self.current_saliency_map
+                
+            loss_sal, loss_dict_sal = self.shared_step(batch, saliency_map=saliency_map)
+            self.log_dict(loss_dict_sal, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("global_step", self.global_step, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+            if self.use_scheduler:
+                lr = self.optimizers().param_groups[0]['lr']
+                self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+            if self.use_ema:
+                self.model_ema(self.model)
+
+            return loss_sal
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -1012,7 +1078,7 @@ class LatentDiffusion(DDPM):
     def p_losses(self, x_start, cond, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = self.apply_model(x_noisy, t, cond)
+        model_out = self.model(x_noisy, t, saliency_map=saliency_map)
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
@@ -1399,22 +1465,22 @@ class DiffusionWrapper(pl.LightningModule):
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 
-    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None):
+    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, saliency_map=None):
         if self.conditioning_key is None:
-            out = self.diffusion_model(x, t)
+            out = self.diffusion_model(x, t, saliency_map=saliency_map)
         elif self.conditioning_key == 'concat':
             xc = torch.cat([x] + c_concat, dim=1)
-            out = self.diffusion_model(xc, t)
+            out = self.diffusion_model(xc, t, saliency_map=saliency_map)
         elif self.conditioning_key == 'crossattn':
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(x, t, context=cc)
+            out = self.diffusion_model(x, t, context=cc, saliency_map=saliency_map)
         elif self.conditioning_key == 'hybrid':
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc)
+            out = self.diffusion_model(xc, t, context=cc, saliency_map=saliency_map)
         elif self.conditioning_key == 'adm':
             cc = c_crossattn[0]
-            out = self.diffusion_model(x, t, y=cc)
+            out = self.diffusion_model(x, t, y=cc, saliency_map=saliency_map)
         else:
             raise NotImplementedError()
 
