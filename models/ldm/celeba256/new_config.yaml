@@ -16,7 +16,7 @@ model:
     # conditioning_key : crossattn
     monitor: val/loss
 
-    first_process_steps: 1000 # 250000
+    first_process_steps: 100 # 250000
 
     FH_config:
       target: Flaw_Highlighter.FlawHighlighter

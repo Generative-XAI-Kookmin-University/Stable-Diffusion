@@ -8,6 +8,7 @@ https://github.com/CompVis/taming-transformers
 
 import torch
 import torch.nn as nn
+import torchvision
 import numpy as np
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import LambdaLR
@@ -18,6 +19,8 @@ from tqdm import tqdm
 from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
 
+from pathlib import Path
+import cv2
 from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
 from ldm.modules.ema import LitEma
 from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
@@ -76,7 +79,7 @@ class DDPM(pl.LightningModule):
                  use_positional_encodings=False,
                  learn_logvar=False,
                  logvar_init=0.,
-                 first_process_steps=1000, # 250000
+                 first_process_steps=100, # 250000
                  FH_config=None
                  ):
         super().__init__()
@@ -130,8 +133,10 @@ class DDPM(pl.LightningModule):
                 raise ValueError("FH_config must specify 'ckpt_path'")
 
             self.FH = instantiate_from_config(FH_config)
-            FH_ckpt = torch.load(ckpt_path, map_location="cpu")
+
+            FH_ckpt = torch.load(ckpt_path, weights_only=False)
             self.FH.load_state_dict(FH_ckpt['model_state_dict'])
+            
             self.FH.eval()
 
             for param in self.FH.parameters():
@@ -361,13 +366,13 @@ class DDPM(pl.LightningModule):
         x = x.to(memory_format=torch.contiguous_format).float()
         return x
 
-    def shared_step(self, batch):
+    def shared_step(self, batch, saliency_map=None):
         x = self.get_input(batch, self.first_stage_key)
-        loss, loss_dict = self(x)
+        loss, loss_dict = self(x, saliency_map=saliency_map)
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
-        x = self.get_input(batch, self.first_stage_key)
+        x, _ = self.get_input(batch, self.first_stage_key)
 
         if self.global_step < self.first_process_steps:
             loss, loss_dict = self.shared_step(batch)
@@ -382,43 +387,63 @@ class DDPM(pl.LightningModule):
                 lr = self.optimizers().param_groups[0]['lr']
                 self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
+            return loss
+
         else:
             if self.global_step % 100 == 0:
                 with self.ema_scope("Saliency Extraction"):
-                    generated_latents = self.model_ema.ema_model.sample(batch_size=x.size(0))
+                    generated_latents = self.sample(cond=None, batch_size=x.size(0))
                     generated_images = self.decode_first_stage(generated_latents)
-
+            
                 noise_maps = []
-
+                
                 for img in generated_images:
-                    input_tensor = torchvision.transforms.functional.resize(img, [128, 128])
-                    input_tensor = torchvision.transforms.functional.normalize(input_tensor, [0.45, 0.45, 0.45], [0.25, 0.25, 0.25])
+                    input_tensor = normalize(resize(img, [128, 128]), [0.45, 0.45, 0.45], [0.25, 0.25, 0.25])
                     input_tensor = input_tensor.unsqueeze(0).to(self.device)
                     input_tensor.requires_grad = True
-                    target_layers = [layer for layer in self.FH.features if isinstance(layer, nn.Conv2d)]
-                    target_layers = target_layers[-1:]
-                    cam = GradCAM(model=self.FH, target_layers=target_layers)
+            
+                    target_layer = []
+                    for layer in self.FH.features:
+                        if isinstance(layer, nn.Conv2d):
+                            target_layer = [layer]
+            
+                    cam = GradCAM(model=self.FH, target_layers=target_layer)
                     cam.batch_size = 1
                     grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(0)])
-                    noise_maps.append(torch.tensor(grayscale_cam[0]).to(self.device))
-                saliency_map = torch.mean(torch.stack(noise_maps), dim=0)
-                self.current_saliency_map = saliency_map
+                    grayscale_cam_img = grayscale_cam[0]
+                    noise_maps.append(torch.tensor(grayscale_cam_img).to(self.device))
+            
+                noise_map = torch.mean(torch.stack(noise_maps), dim=0)
+                self.current_saliency_map = noise_map
+                saliency_map = noise_map
 
+                self.saliency_map_folder = Path('./results/saliency_map')
+                self.saliency_map_folder.mkdir(parents=True, exist_ok=True)
+
+                image_path = str(self.saliency_map_folder / f'saliency_map_{self.global_step}.png')
+
+                heatmap = cv2.applyColorMap(np.uint8(255 * noise_map.cpu().numpy()), cv2.COLORMAP_JET)
+                input_image = input_tensor.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+                input_image = input_image * np.array([0.25, 0.25, 0.25]) + np.array([0.45, 0.45, 0.45])
+                input_image = np.clip(input_image, 0, 1)
+                input_image = np.uint8(255 * input_image)
+                heatmap = cv2.resize(heatmap, (input_image.shape[1], input_image.shape[0]))
+                overlay = cv2.addWeighted(input_image, 0.6, heatmap, 0.4, 0)
+                cv2.imwrite(image_path, overlay)
+                
             else:
                 saliency_map = self.current_saliency_map
+            
+                loss, loss_dict = self.shared_step(batch, saliency_map=saliency_map)
+
+                self.log_dict(loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("global_step", self.global_step, prog_bar=True, logger=True, on_step=True, on_epoch=False)
                 
-            loss_sal, loss_dict_sal = self.shared_step(batch, saliency_map=saliency_map)
-            self.log_dict(loss_dict_sal, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("global_step", self.global_step, prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
-            if self.use_scheduler:
-                lr = self.optimizers().param_groups[0]['lr']
-                self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
-            if self.use_ema:
-                self.model_ema(self.model)
-
-            return loss_sal
+                if self.use_scheduler:
+                    lr = self.optimizers().param_groups[0]['lr']
+                    self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            
+                return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -928,9 +953,9 @@ class LatentDiffusion(DDPM):
         else:
             return self.first_stage_model.encode(x)
 
-    def shared_step(self, batch, **kwargs):
+    def shared_step(self, batch, saliency_map=None):
         x, c = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c)
+        loss = self(x, c, saliency_map=saliency_map)     
         return loss
 
     def forward(self, x, c, *args, **kwargs):
@@ -1075,7 +1100,7 @@ class LatentDiffusion(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, t, noise=None):
+    def p_losses(self, x_start, cond, t, noise=None, saliency_map=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_out = self.model(x_noisy, t, saliency_map=saliency_map)
@@ -1090,7 +1115,7 @@ class LatentDiffusion(DDPM):
         else:
             raise NotImplementedError()
 
-        loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+        loss_simple = self.get_loss(model_out, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
         #logvar_t = self.logvar[t].to(self.device)
         logvar_t = self.logvar.to(t.device)[t]
@@ -1102,7 +1127,7 @@ class LatentDiffusion(DDPM):
 
         loss = self.l_simple_weight * loss.mean()
 
-        loss_vlb = self.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
+        loss_vlb = self.get_loss(model_out, target, mean=False).mean(dim=(1, 2, 3))
         loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb)

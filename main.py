@@ -736,3 +736,7 @@ if __name__ == "__main__":
 # pip install pytorch-lightning==1.7.7
 # pip install taming-transformers-rom1504
 # pip install numpy==1.26.4
+# pip install grad-cam
+
+# apt-get update
+# apt-get install libgl1-mesa-glx -y

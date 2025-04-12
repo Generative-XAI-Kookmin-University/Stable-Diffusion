@@ -7,6 +7,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+import inspect
 
 from ldm.modules.diffusionmodules.util import (
     checkpoint,
@@ -70,21 +71,21 @@ class TimestepBlock(nn.Module):
         Apply the module to `x` given `emb` timestep embeddings.
         """
 
-
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
-    """
-    A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
-    """
-
     def forward(self, x, emb, context=None, saliency_map=None):
         for layer in self:
+            sig = inspect.signature(layer.forward)
+            kwargs = {}
+            if "saliency_map" in sig.parameters:
+                kwargs["saliency_map"] = saliency_map
+
+            if "context" in sig.parameters:
+                kwargs["context"] = context
+
             if isinstance(layer, TimestepBlock):
-                x = layer(x, emb, saliency_map=saliency_map)
-            elif isinstance(layer, SpatialTransformer):
-                x = layer(x, context)
+                x = layer(x, emb, **kwargs)
             else:
-                x = layer(x)
+                x = layer(x, **kwargs)
         return x
 
 
@@ -240,19 +241,16 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, saliency_map=None):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
         :param x: an [N x C x ...] Tensor of features.
         :param emb: an [N x emb_channels] Tensor of timestep embeddings.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
-        )
+        return checkpoint(self._forward, (x, emb, saliency_map), self.parameters(), self.use_checkpoint)
 
-
-    def _forward(self, x, emb):
+    def _forward(self, x, emb, saliency_map=None):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -276,12 +274,6 @@ class ResBlock(TimestepBlock):
 
 
 class AttentionBlock(nn.Module):
-    """
-    An attention block that allows spatial positions to attend to each other.
-    Originally ported from here, but adapted to the N-d case.
-    https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/models/unet.py#L66.
-    """
-
     def __init__(
         self,
         channels,
@@ -296,35 +288,30 @@ class AttentionBlock(nn.Module):
         if num_head_channels == -1:
             self.num_heads = num_heads
         else:
-            assert (
-                channels % num_head_channels == 0
-            ), f"q,k,v channels {channels} is not divisible by num_head_channels {num_head_channels}"
+            assert channels % num_head_channels == 0, f"q,k,v channels {channels} is not divisible by num_head_channels {num_head_channels}"
             self.num_heads = channels // num_head_channels
         self.use_checkpoint = use_checkpoint
         self.norm = normalization(channels)
         self.qkv = conv_nd(1, channels, channels * 3, 1)
         if use_new_attention_order:
-            # split qkv before split heads
             self.attention = QKVAttention(self.num_heads)
         else:
-            # split heads before split qkv
             self.attention = QKVAttentionLegacy(self.num_heads)
-
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
-
         self.saliency_weight = saliency_weight
 
-    def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
-        #return pt_checkpoint(self._forward, x)  # pytorch
+    def forward(self, x, saliency_map=None):
+        if saliency_map is None:
+            b, _, *spatial = x.shape
+            saliency_map = th.zeros((b, 1, *spatial), device=x.device, dtype=x.dtype)
+        return checkpoint(self._forward, (x, saliency_map), self.parameters(), True)
 
-    def _forward(self, x, saliency_map):
+    def _forward(self, x, saliency_map=None):
         b, c, *spatial = x.shape
         L = np.prod(spatial)
         x_reshaped = x.reshape(b, c, -1)
         normed = self.norm(x_reshaped)
         qkv = self.qkv(normed)
-
         q, k, v = qkv.chunk(3, dim=1)
 
         q = q.reshape(b, self.num_heads, -1, L)
@@ -332,13 +319,16 @@ class AttentionBlock(nn.Module):
         v = v.reshape(b, self.num_heads, -1, L)
 
         if saliency_map is not None:
+            if saliency_map.dim() == 2:
+                saliency_map = saliency_map.unsqueeze(0).unsqueeze(0)
+                saliency_map = saliency_map.expand(b, -1, -1, -1)
+    
             saliency_resized = F.interpolate(saliency_map, size=spatial, mode="bilinear", align_corners=False)
-            saliency_flat = saliency_resized.view(b, 1, -1)  # [B, 1, L]
-
-            saliency_factor = 1 + self.saliency_weight * saliency_flat  # [B, 1, L]
-            saliency_factor = saliency_factor.expand(b, self.num_heads, L)  # [B, num_heads, L]
-            saliency_factor = saliency_factor.unsqueeze(2)  # [B, num_heads, 1, L]
-
+            saliency_flat = saliency_resized.view(b, 1, -1)
+            saliency_factor = 1 + self.saliency_weight * saliency_flat
+            saliency_factor = saliency_factor.expand(b, self.num_heads, -1)
+            saliency_factor = saliency_factor.unsqueeze(2)
+            
             k = k * saliency_factor
             v = v * saliency_factor
 
@@ -989,4 +979,3 @@ class EncoderUNetModel(nn.Module):
         else:
             h = h.type(x.dtype)
             return self.out(h)
-
