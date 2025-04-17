@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 4.5e-06
+  base_learning_rate: 2e-06
   target: ldm.models.autoencoder.VQModel
   params:
     embed_dim: 3
@@ -32,14 +32,16 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 4
     num_workers: 16
     wrap: true
     train:
-      target: ldm.data.openimages.FullOpenImagesTrain
+      target: ldm.data.celeba.CelebAHQTrain
       params:
-        crop_size: 256
+        data_root: "../celeba_new/train"
+        size: 256
     validation:
-      target: ldm.data.openimages.FullOpenImagesValidation
+      target: ldm.data.celeba.CelebAHQValidation
       params:
-        crop_size: 256
+        data_root: "../celeba_new/val"
+        size: 256

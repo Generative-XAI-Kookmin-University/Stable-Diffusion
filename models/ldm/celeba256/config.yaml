@@ -14,6 +14,14 @@ model:
     cond_stage_trainable: false
     concat_mode: false
     monitor: val/loss
+
+    first_process_steps: 5
+    FH_config:
+      target: Flaw_Highlighter.FlawHighlighter
+      params:
+        params: { "nc": 3, "ndf": 32 }
+        ckpt_path: "pretrained/FH_best_10.pth"
+
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
@@ -32,6 +40,8 @@ model:
         - 3
         - 4
         num_head_channels: 32
+        saliency_weight: 0.025
+
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:

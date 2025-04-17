@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torchvision import models
 
 class FlawHighlighter(nn.Module):
-    def __init__(self, params, input_image_size=128):
+    def __init__(self, params, input_image_size=256):
         super().__init__()
 
         vgg16 = models.vgg16(pretrained=True)

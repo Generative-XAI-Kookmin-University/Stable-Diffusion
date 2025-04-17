@@ -392,13 +392,25 @@ class DDPM(pl.LightningModule):
         else:
             if self.global_step % 100 == 0:
                 with self.ema_scope("Saliency Extraction"):
-                    generated_latents = self.sample(cond=None, batch_size=x.size(0))
+                    # generated_latents = self.sample(cond=None, batch_size=x.size(0))
+                    # generated_images = self.decode_first_stage(generated_latents)
+
+                    ddim_sampler = DDIMSampler(self)
+
+                    shape = (self.channels, self.image_size, self.image_size)
+                    generated_latents, _ = ddim_sampler.sample(
+                        S=250,
+                        batch_size=x.size(0),
+                        shape=shape,
+                        conditioning=None,
+                        verbose=False
+                    )
                     generated_images = self.decode_first_stage(generated_latents)
             
                 noise_maps = []
                 
                 for img in generated_images:
-                    input_tensor = normalize(resize(img, [128, 128]), [0.45, 0.45, 0.45], [0.25, 0.25, 0.25])
+                    input_tensor = normalize(resize(img, [256, 256]), [0.45, 0.45, 0.45], [0.25, 0.25, 0.25])
                     input_tensor = input_tensor.unsqueeze(0).to(self.device)
                     input_tensor.requires_grad = True
             

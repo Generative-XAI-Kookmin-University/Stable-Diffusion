@@ -4,7 +4,7 @@ pudb==2019.2
 invisible-watermark
 imageio==2.9.0
 imageio-ffmpeg==0.4.2
-pytorch-lightning
+pytorch-lightning==1.6.5
 omegaconf==2.1.1
 test-tube>=0.7.5
 streamlit>=0.73.1
@@ -14,6 +14,8 @@ transformers==4.19.2
 torchmetrics==0.6.0
 kornia==0.6
 pillow==9.4.0
+numpy==1.26.4
+grad-cam
 -e git+https://github.com/CompVis/taming-transformers.git@master#egg=taming-transformers
 -e git+https://github.com/openai/CLIP.git@main#egg=clip
 -e .

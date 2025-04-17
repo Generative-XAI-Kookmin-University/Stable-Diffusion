@@ -20,7 +20,6 @@ from pytorch_lightning.utilities import rank_zero_info
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 
-
 def get_parser(**parser_kwargs):
     def str2bool(v):
         if isinstance(v, bool):
@@ -483,11 +482,32 @@ if __name__ == "__main__":
             # idx = len(paths)-paths[::-1].index("logs")+1
             # logdir = "/".join(paths[:idx])
             logdir = "/".join(paths[:-2])
+            if len(logdir) == 0:
+                logdir = "logs/Self-Refining-SD/first_process_25"
             ckpt = opt.resume
         else:
             assert os.path.isdir(opt.resume), opt.resume
             logdir = opt.resume.rstrip("/")
             ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
+
+        # FH
+        checkpoint = torch.load(ckpt, map_location="cpu")
+        if 'state_dict' in checkpoint:
+            from omegaconf import OmegaConf
+            config = OmegaConf.load(opt.base[0]) 
+            from ldm.util import instantiate_from_config
+            temp_model = instantiate_from_config(config.model)
+            empty_state_dict = temp_model.state_dict()
+
+            for k, v in checkpoint["state_dict"].items():
+                if k in empty_state_dict:
+                    empty_state_dict[k] = v
+
+            checkpoint["state_dict"] = empty_state_dict
+            
+            temp_ckpt_path = ckpt + '.temp'
+            torch.save(checkpoint, temp_ckpt_path)
+            ckpt = temp_ckpt_path
 
         opt.resume_from_checkpoint = ckpt
         base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
